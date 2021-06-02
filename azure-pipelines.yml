@@ -1,19 +1,64 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
-
 trigger:
-- master
+  branches:
+    include:
+      - master
+      - feature/SP-5156_avintegration_port
 
-pool:
-  vmImage: ubuntu-latest
 
-steps:
-- script: echo Hello, world!
-  displayName: 'Run a one-line script'
+pr:
+ branches:
+   exclude:
+     - "*"
 
-- script: |
-    echo Add other tasks to build, test, and deploy your project.
-    echo See https://aka.ms/yaml
-  displayName: 'Run a multi-line script'
+stages:
+  - stage: Build_Application_and_Tests
+    jobs:
+    - job: Build_And_Test
+      pool: windows-latest
+      timeoutInMinutes: 180
+      steps:
+      - powershell: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $Url = "https://sourceforge.net/projects/boost/files/boost-binaries/1.73.0/boost_1_73_0-msvc-14.2-64.exe/download"
+          (New-Object System.Net.WebClient).DownloadFile($Url, "$env:TEMP\boost.exe")
+          Start-Process -Wait -FilePath "$env:TEMP\boost.exe" "/SILENT","/SP-","/SUPPRESSMSGBOXES","/DIR=C:\hostedtoolcache\windows\Boost\1.73.0\x86_64"
+          ls "C:\hostedtoolcache\windows\Boost\1.73.0\x86_64"
+          ls "C:\hostedtoolcache\windows\Boost\1.73.0\x86_64\boost"
+          ls "C:\hostedtoolcache\windows\Boost\1.73.0\x86_64\libs"
+          ls "C:\hostedtoolcache\windows\Boost\1.73.0\x86_64\lib64-msvc-14.2"
+        displayName: 'Install Boost'
+      - task: InstallSSHKey@0
+        inputs:
+          knownHostsEntry: $(KnownHosts)
+          sshPublicKey: $(SshPubKey)
+          sshKeySecureFile: epa-pipeline
+        displayName: 'Install SSH keys'
+      - script: |
+          git submodule update --init  --recursive
+        displayName: 'Pull external submodules needed'
+      - powershell: |
+          mkdir .\build
+          cd .\build\
+          C:\cmake\bin\cmake -G "Visual Studio 16 2019" -DBOOST_LIB_PATH="C:\hostedtoolcache\windows\Boost\1.73.0\x86_64" -A x64 ..
+        env:
+          snson_gh_oauth_token: $(GH_TOKEN)
+          BOOST_ROOT: "C:\\hostedtoolcache\\windows\\Boost\\1.73.0\\x86_64"
+        workingDirectory: "$(Build.SourcesDirectory)"
+        displayName: 'Configure Antimalware build'
+      - powershell: |
+          C:\cmake\bin\cmake --build . --config RelWithDebInfo -j10
+        env:
+          snson_gh_oauth_token: $(GH_TOKEN)
+          BOOST_ROOT: "C:\\hostedtoolcache\\windows\\Boost\\1.73.0\\x86_64"
+        workingDirectory: "$(Build.SourcesDirectory)\\build"
+        displayName: 'Build Antimalware release'
+      - powershell: |
+          C:\cmake\bin\cmake --build . --config RelWithDebInfo --target run_tests
+        env:
+          snson_gh_oauth_token: $(GH_TOKEN)
+          BOOST_ROOT: "C:\\hostedtoolcache\\windows\\Boost\\1.73.0\\x86_64"
+          SCANNER_LICENSE_FILE: "$(Build.SourcesDirectory)\\external\\bd-deps\\bindeps\\license.txt"
+          SCANNER_ENGINE_PATH: "$(Build.SourcesDirectory)\\external\\bd-deps\\bindeps"
+          SCANNER_TEST_FILES_PATH: "$(Build.SourcesDirectory)\\tests\\file_samples"
+        workingDirectory: "$(Build.SourcesDirectory)\\build"
+        displayName: 'Run Antimalware tests'
